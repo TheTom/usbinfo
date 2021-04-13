@@ -12,73 +12,72 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""
-Smoke Tests
-===========
+"""Implementation of ``usbinfo`` for Linux-based systems."""
 
-This test fixture checks basic functionality of the ``usbinfo`` package.
-"""
+import pyudev
 
-import logging
-import unittest
+from .posix import get_mounts
 
 
-class SmokeTest(unittest.TestCase):
+def usbinfo(decode_model=False, **kwargs):
+    """Helper for usbinfo on Linux.
 
+    Args:
+        decode_model: Due to versions <=1.0.2 incorrectly using ID_MODEL, this
+            allows for the newer API to return the proper product name.
+        **kwargs: Additional keyword arguments specific to platform
+            implementation.
     """
-    Test fixture for basic smoke tests.
+    info_list = []
+
+    _mounts = get_mounts()
+
+    context = pyudev.Context()
+    devices = context.list_devices().match_property('ID_BUS', 'usb')
+
+    for device in devices:
+        if decode_model:
+            id_product = _decode(device.get('ID_MODEL_ENC', u''))
+            id_vendor = _decode(device.get('ID_VENDOR_ENC', u''))
+        else:
+            id_product = device.get('ID_MODEL', u'')
+            id_vendor = device.get('ID_VENDOR', u'')
+        devinfo = {
+            'bInterfaceNumber': device.get('ID_USB_INTERFACE_NUM', u''),
+            'devname': device.get('DEVNAME', u''),
+            'devpath': device.get('DEVPATH', u''),
+            'iManufacturer': id_vendor,
+            'iProduct': id_product,
+            'iSerialNumber': device.get('ID_SERIAL_SHORT', u''),
+            'idProduct': device.get('ID_MODEL_ID', u''),
+            'idVendor': device.get('ID_VENDOR_ID', u''),
+        }
+
+        mount = _mounts.get(device.get('DEVNAME'))
+        if mount:
+            devinfo['mount'] = mount
+
+        info_list.append(devinfo)
+
+    return info_list
+
+def _decode(unicode_str):
+    """Decode malformed unicode strings from pyudev.
+
+    ID_MODEL_ENC and ID_VENDOR_ENC could return values as:
+
+      u'Natural\xae\\x20Ergonomic\\x20Keyboard\\x204000'
+
+    which would raise a UnicodeEncodeError. To work around this, the string
+    is first fixed by replacing any extended-ASCII characters with an escaped
+    character string.
+
+    Args:
+        unicode_str: Unicode string to decode.
+
+    Returns:
+        A decoded string.
     """
-
-    def shortDescription(self):
-        """Prevent nosetests from showing docstring in results"""
-        return None
-
-    def test_usbinfo(self):
-        """Tests that module can be imported and that ``usbinfo()`` can
-        be executed."""
-        attrs = [
-            'idVendor',
-            'idProduct',
-            'iManufacturer',
-            'iProduct',
-            'iSerialNumber',
-            'bInterfaceNumber',
-            'devname',
-        ]
-
-        try:
-            # Check that we can import
-            import usbinfo
-
-            # Check that we can execute usbinfo()
-            results = usbinfo.usbinfo()
-        except Exception as e:
-            for line in e.message.split('\n'):
-                logging.error(line)
-            self.fail('Caught exception of type {0}'.format(type(e)))
-
-        # Check that the result is a list
-        self.assertTrue(isinstance(results, list))
-
-        # Check each device
-        for device in results:
-
-            # Check that this device is a dictionary type
-            self.assertTrue(isinstance(device, dict),
-                            'Device is not a dict instance')
-
-            # Check for each compulsory attribute
-            for attr in attrs:
-                self.assertTrue(attr in device,
-                                'Device missing attribute %s' % attr)
-                # basestring throw Exception NameError in python3
-                try:
-                    isinstance('', basestring)
-                    self.assertTrue(isinstance(device.get(attr), basestring),
-                                    'Attribute %s is not a basestring' % attr)
-                except NameError:
-                    self.assertTrue(isinstance(device.get(attr), str),
-                                    'Attribute %s is not a basestring' % attr)
-
-if __name__ == '__main__':
-    unittest.main()
+    fixed_str = ''.join(
+        [c if ord(c) < 128 else '\\x%02x' % ord(c) for c in unicode_str])
+    return fixed_str.decode('string_escape')
